@@ -1,75 +1,89 @@
-import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import '../models/user.dart';
+import 'api_client.dart';
 
-class AuthService with ChangeNotifier {
-  static const String apiUrl = 'http://localhost:5000/api';
-  String? _token;
-  bool _isLoggedIn = false;
+class AuthService {
+  final ApiClient _client;
 
-  bool get isLoggedIn => _isLoggedIn;
-  String? get token => _token;
+  AuthService(this._client);
 
-  AuthService() {
-    _loadToken();
+  Future<AuthResult> login(String email, String password) async {
+    final data = await _client.post(
+      '/auth/login',
+      body: {'email': email.trim(), 'password': password},
+    );
+    return _parseAuth(data);
   }
 
-  Future<void> _loadToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString('token');
-    _isLoggedIn = _token != null;
-    notifyListeners();
+  Future<AuthResult> register(String email, String password, String name) async {
+    final data = await _client.post(
+      '/auth/register',
+      body: {
+        'email': email.trim(),
+        'password': password,
+        'name': name.trim(),
+      },
+    );
+    return _parseAuth(data);
   }
 
-  Future<bool> register(String email, String password, String name) async {
+  Future<User> me() async {
+    final data = await _client.get('/auth/me');
+    if (data is! Map || data['user'] is! Map<String, dynamic>) {
+      throw const ApiException('Некорректный ответ сервера');
+    }
+    return User.fromJson(data['user'] as Map<String, dynamic>);
+  }
+
+  Future<void> logout() async {
     try {
-      final response = await http.post(
-        Uri.parse('$apiUrl/auth/register'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'email': email,
-          'password': password,
-          'name': name,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        _token = data['token'];
-        _isLoggedIn = true;
-        
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('token', _token!);
-        
-        notifyListeners();
-        return true;
-      }
-      return false;
-    } catch (e) {
-      print('Register error: $e');
-      return false;
+      await _client.post('/auth/logout');
+    } on ApiException {
+      // The token is stateless; local sign-out must work even without network.
     }
   }
 
-  Future<bool> login(String email, String password) async {
-    try {
-      final response = await http.post(
-        Uri.parse('$apiUrl/auth/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'email': email,
-          'password': password,
-        }),
-      );
+  Future<void> changePassword(String oldPassword, String newPassword) async {
+    await _client.post(
+      '/auth/change-password',
+      body: {'old_password': oldPassword, 'new_password': newPassword},
+    );
+  }
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        _token = data['token'];
-        _isLoggedIn = true;
-        
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('token', _token!);
-        
-        notifyListeners();
-        return true;
+  /// Updates only the fields that are passed in.
+  Future<User> updateProfile({
+    String? name,
+    String? bio,
+    String? avatar,
+    int? dailyGoalMinutes,
+    String? accentColor,
+    String? themeMode,
+  }) async {
+    final data = await _client.patch(
+      '/auth/profile',
+      body: {
+        if (name != null) 'name': name.trim(),
+        if (bio != null) 'bio': bio.trim(),
+        'avatar': ?avatar,
+        'daily_goal_minutes': ?dailyGoalMinutes,
+        'accent_color': ?accentColor,
+        'theme_mode': ?themeMode,
+      },
+    );
+    if (data is! Map || data['user'] is! Map<String, dynamic>) {
+      throw const ApiException('Некорректный ответ сервера');
+    }
+    return User.fromJson(data['user'] as Map<String, dynamic>);
+  }
+
+  AuthResult _parseAuth(dynamic data) {
+    if (data is! Map ||
+        data['token'] is! String ||
+        data['user'] is! Map<String, dynamic>) {
+      throw const ApiException('Некорректный ответ сервера');
+    }
+    return AuthResult(
+      user: User.fromJson(data['user'] as Map<String, dynamic>),
+      token: data['token'] as String,
+    );
+  }
+}
